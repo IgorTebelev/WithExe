@@ -148,7 +148,14 @@ If this tiny mapper just saved your well-funded enterprise from shipping a `PAGE
 
 * **BTC (Bitcoin):** `3CVm3CZ3JoRv7jW8ypkYfUED599hdorJgJ`
 
-![BTC](assets/3CVm3CZ3JoRv7jW8ypkYfUED599hdorJgJ.png)
+<p align="center">
+  <a href="bitcoin:3CVm3CZ3JoRv7jW8ypkYfUED599hdorJgJ">
+    <img src="assets/3CVm3CZ3JoRv7jW8ypkYfUED599hdorJgJ.png" alt="Bitcoin Tip Jar QR Code 3CVm3CZ3JoRv7jW8ypkYfUED599hdorJgJ" width="200" />
+  </a>
+  <br><br>
+  <b>Thank you!</b>
+  <br><br>
+</p>
 
 Thank you!
 
