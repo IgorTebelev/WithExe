@@ -1,0 +1,16 @@
+.vs/
+**/*.user
+*.suo
+*.userosscache
+*.VC.db
+*.VC.opendb
+**/obj/
+*.log
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.recipe
+*.tlog
+Thumbs.db
+.DS_Store

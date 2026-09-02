@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="SOURCE/WithExeClr/WithExeClr.csproj">
+    <Platform Project="x64" />
+    <Build />
+  </Project>
+  <Project Path="SOURCE/WithExe/WithExe.vcxproj" Id="6c8bd771-d79a-43c5-9285-2734e6afab4a" />
+</Solution>
