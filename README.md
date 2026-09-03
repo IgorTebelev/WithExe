@@ -74,7 +74,7 @@ REDISTRIBUTABLES\BIN\x64\Release\WithExeClr.exe C:\full\path\app.exe
 
 ## ⚙️ Why not PE mapping
 
-A typical PE mapper `VirtualAlloc`s, copies sections, walks imports, applies relocs, and fakes an entry. That is a second loader, always behind the OS, and the image is usually private memory rather than a real image section.
+A typical PE mapper VirtualAllocates, copies sections, walks imports, applies relocs, and fakes an entry. That is a second loader, always behind the OS, and the image is usually private memory rather than a real image section.
 
 WithExe uses `LoadLibrary` on the EXE (the image is briefly treated as a DLL for the loader, then restored). Compared to mapping by hand:
 
