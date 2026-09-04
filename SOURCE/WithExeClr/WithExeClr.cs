@@ -294,8 +294,7 @@ internal static class Program
         // returns result by Intercepting original ExitProcess (0 if map/setup failed).
         uint code = pfnRun(exe, cmd);
         Console.WriteLine($"[{csWithExe}] Returned from run with code: {(int)code}");
-        Console.WriteLine($"[{csWithExe}] Exiting");
-        return (int)code;
+        Environment.Exit((int)code);
     }
 }
 //

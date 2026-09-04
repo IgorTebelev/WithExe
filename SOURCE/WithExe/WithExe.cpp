@@ -272,9 +272,9 @@ int CDECL wmain(int argc, WCHAR** argv)
         printf("[%S] Run exception 0x%08lX\n", g_csWithExe, GetExceptionCode());
         fflush(stdout);
         Beep(1000, 400);
+        code = GetExceptionCode();
     }
-    printf("[%S] Exiting\n", g_csWithExe);
-    return (int)code;
+    ExitProcess(code);
 }
 //
 ///////////////////////////////////////////////////////////////// End of File.
