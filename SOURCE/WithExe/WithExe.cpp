@@ -47,23 +47,34 @@
 
 #pragma comment(lib, "shlwapi.lib")
 
-// Run() lives in With.dll. Same signature as With.h.
-typedef UINT (WINAPI* PFN_RUN)(LPCWSTR, LPCWSTR);
+// RunEx() lives in With.dll. Same signature as With.h.
+typedef UINT (WINAPI* PFN_RUNEX)(LPCWSTR, LPCWSTR, DWORD, FARPROC*);
 
 static const WCHAR g_csWithDll[] = L"With.dll";
 static const WCHAR g_csWithExe[] = L"WithExe.exe";
 
 //////////////////////////////////////////////////////////////////////////////
-// PrintUsage — /? and bad args. -d is host-only: set DLL
-// search dir + cwd to the guest folder.
+// PrintUsage — /? and bad args. Letters after the dash are a CLUSTER.
+// i/c/f/e/s turn OFF a RunEx bit; default is the six Run() bits ON.
+// -t turns ON WITH_EXIT_THREAD (default OFF).
 //
 void PrintUsage(void)
 {
     printf("Usage:\n"
            "    %S [options] [dlls...] exe [args...]\n"
            "    dlls / exe : FULL path unless the file is next to this EXE.\n"
-           "Options:\n"
-           "    -d       : set DLL directory and cwd to the guest folder.\n"
+           "Options (one cluster, e.g. -e or -icf):\n"
+           "    Default ON: PEB image, command line, loader name, ExitProcess trap,\n"
+           "    SetDllDirectory to the guest folder, and system LoadLibrary (IAT/TLS).\n"
+           "    i/c/f/e/s turn that bit OFF. -d is ON (default is already ON).\n"
+           "    -t turns ON ExitThread (default OFF).\n"
+           "    -d       : ON  SetDllDirectory to the guest folder (default ON).\n"
+           "    -i       : OFF PEB ImageBaseAddress = guest.\n"
+           "    -c       : OFF GetCommandLineW/A write.\n"
+           "    -f       : OFF loader-list EXE name = guest.\n"
+           "    -e       : OFF ExitProcess returns from RunEx (guest ExitProcess kills us).\n"
+           "    -s       : OFF system LoadLibrary; With.dll snaps IAT+TLS.\n"
+           "    -t       : ON  guest ExitProcess ends this thread (RunEx does not return).\n"
            "    /?       : This help screen.\n"
            "(c) TIG 2026 All Rights Reserved\n",
            g_csWithExe);
@@ -71,7 +82,7 @@ void PrintUsage(void)
 
 //////////////////////////////////////////////////////////////////////////////
 // ExtIs — TRUE if path's extension is ext (".dll" / ".exe"), case-insensitive.
-// Options (-d, /?) are not files: leading '-' or '/' => FALSE.
+// Options (-d, -icfe, /?) are not files: leading '-' or '/' => FALSE.
 // PathFindExtensionW returns a pointer into path, e.g. ".exe", or "\0" if none.
 //
 static BOOL ExtIs(LPCWSTR path, LPCWSTR ext)
@@ -84,15 +95,20 @@ static BOOL ExtIs(LPCWSTR path, LPCWSTR ext)
 }
 
 //////////////////////////////////////////////////////////////////////////////
-    // ParseOptions — one argv token like "-d" or "/d".
+// ParseOptions — one argv token like "-de" or "/icf".
 // Letters after the dash are a CLUSTER (Detours withdll style).
-// Help calls this block [options].
 //
-//   d  set *pDllDir                    (THIS host will SetDllDirectory to the guest folder)
+//   d  set DLLDIR       SetDllDirectoryW to the guest folder (default already ON)
+//   i  clear IMAGE      no PEB ImageBaseAddress = guest
+//   c  clear CMDLINE    no GetCommandLineW/A write
+//   f  clear NAME       no loader-list EXE name = guest
+//   e  clear EXIT       no return-from-RunEx on ExitProcess
+//   s  clear SYSTEM_LOADLIBRARY  With.dll snaps IAT+TLS instead of the system loader
+//   t  set   EXIT_THREAD guest ExitProcess ends this thread (wins over EXIT)
 //
 // Unknown letter => FALSE (caller prints help). Does not consume argv; wmain does.
 //
-static BOOL ParseOptions(LPCWSTR pToken, BOOL* pDllDir)
+static BOOL ParseOptions(LPCWSTR pToken, DWORD* pFlags)
 {
     if ((pToken[0] != L'-' && pToken[0] != L'/') || pToken[1] == L'\0')
         return FALSE;
@@ -101,7 +117,19 @@ static BOOL ParseOptions(LPCWSTR pToken, BOOL* pDllDir)
         WCHAR tmp[2] = { pToken[i], 0 };
         CharLowerW(tmp);
         if (tmp[0] == L'd')
-            *pDllDir = TRUE;
+            *pFlags |= WITH_DLLDIR;
+        else if (tmp[0] == L'i')
+            *pFlags &= ~WITH_PEB_IMAGE;
+        else if (tmp[0] == L'c')
+            *pFlags &= ~WITH_PEB_CMDLINE;
+        else if (tmp[0] == L'f')
+            *pFlags &= ~WITH_PEB_NAME;
+        else if (tmp[0] == L'e')
+            *pFlags &= ~WITH_EXIT;
+        else if (tmp[0] == L's')
+            *pFlags &= ~WITH_SYSTEM_LOADLIBRARY;
+        else if (tmp[0] == L't')
+            *pFlags |= WITH_EXIT_THREAD;
         else
             return FALSE;
     }
@@ -109,36 +137,16 @@ static BOOL ParseOptions(LPCWSTR pToken, BOOL* pDllDir)
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// SetGuestDllDir — only if the user passed -d.
-//
-// CreateProcess puts the EXE's directory on the DLL search path and as cwd.
-// In-process we do NOT get that for free: this process started as WithExe.exe.
-// So -d copies the guest path, strips the filename (PathRemoveFileSpecW),
-// then SetDllDirectoryW + SetCurrentDirectoryW to that folder.
-// Bare "game.exe" with no path: nothing to strip, we return and leave cwd alone.
-//
-static void SetGuestDllDir(LPCWSTR exe)
-{
-    WCHAR dir[MAX_PATH];
-    lstrcpynW(dir, exe, MAX_PATH);
-    if (!PathRemoveFileSpecW(dir) || !dir[0])
-        return;
-    SetDllDirectoryW(dir);
-    SetCurrentDirectoryW(dir);
-    printf("[%S] DLL directory and cwd: %S\n", g_csWithExe, dir);
-}
-
-//////////////////////////////////////////////////////////////////////////////
 // LoadWithDll — With.dll must sit next to THIS host EXE.
 // GetModuleFileNameW(NULL) = full path of WithExe.exe. Strip the filename,
-// append "With.dll", LoadLibraryW. Then GetProcAddress("Run").
+// append "With.dll", LoadLibraryW. Then GetProcAddress("RunEx").
 // LoadLibrary of an already-loaded module just returns that HMODULE.
 //
-static PFN_RUN LoadWithDll(void)
+static PFN_RUNEX LoadWithDll(void)
 {
     WCHAR path[MAX_PATH];
     HMODULE hDll;
-    PFN_RUN pfn;
+    PFN_RUNEX pfn;
 
     GetModuleFileNameW(NULL, path, MAX_PATH);
     PathRemoveFileSpecW(path);
@@ -151,17 +159,17 @@ static PFN_RUN LoadWithDll(void)
         return NULL;
     }
     printf("[%S] %S %p\n", g_csWithExe, g_csWithDll, hDll);
-    pfn = (PFN_RUN)GetProcAddress(hDll, "Run");
+    pfn = (PFN_RUNEX)GetProcAddress(hDll, "RunEx");
     if (!pfn)
-        printf("[%S] GetProcAddress(Run) failed.\n", g_csWithExe);
+        printf("[%S] GetProcAddress(RunEx) failed.\n", g_csWithExe);
     return pfn;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // wmain
 //
-//  1. Optional ONE [options] token at argv[1] (-d, /?).
-//  2. Load With.dll, get Run.
+//  1. Optional ONE [options] token at argv[1] (-d, -icfe, /?).
+//  2. Load With.dll, get RunEx.
 //  3. Remaining args: .dll helpers (LoadLibrary), then ONE .exe (the guest).
 //  4. Guest command line = pointer into GetCommandLineW() at that .exe.
 //     We do NOT rebuild the line. PathGetArgsW skips one token each time
@@ -169,15 +177,14 @@ static PFN_RUN LoadWithDll(void)
 //     WithExe.exe, the options token, and every helper DLL.
 //
 //     Host line:
-//       WithExe.exe -d helper.dll "C:\My App\game.exe" --level 3
+//       WithExe.exe -de helper.dll "C:\My App\game.exe" --level 3
 //                                 ^
 //                                 cmd points here (guest's CreateProcess-style line)
 //
 //     If we passed the WHOLE GetCommandLineW(), the guest would see
 //     WithExe.exe as its command line. Wrong.
 //
-//  5. Optional -d: DLL dir / cwd = guest folder.
-//  6. __try { Run(exe, cmd) }. The host decides how to process SEH.
+//  5. __try { RunEx(exe, cmd, flags) }. The host decides how to process SEH.
 //     A GUI host can run a secondary message pump from the filter / __except.
 //     This sample just reports the exception. With.dll keeps unwind for Run
 //     so x64 can walk: guest -> Run -> here. Guest ExitProcess is a return
@@ -186,14 +193,14 @@ static PFN_RUN LoadWithDll(void)
 int CDECL wmain(int argc, WCHAR** argv)
 {
     BOOLEAN fNeedHelp = FALSE;
-    BOOL fDllDir = FALSE;       // host-only; -d sets this
+    DWORD flags = WITH_PEB_IMAGE | WITH_PEB_CMDLINE | WITH_PEB_NAME | WITH_EXIT | WITH_DLLDIR | WITH_SYSTEM_LOADLIBRARY;
     int arg = 1;                // argv[0] is WithExe.exe; we parse from 1
 
     if (arg < argc && (argv[arg][0] == L'-' || argv[arg][0] == L'/'))
     {
         if (argv[arg][1] == L'?' && argv[arg][2] == 0)
             fNeedHelp = TRUE;
-        else if (!ParseOptions(argv[arg], &fDllDir))
+        else if (!ParseOptions(argv[arg], &flags))
         {
             printf("[%S] Bad argument: %S\n", g_csWithExe, argv[arg]);
             fNeedHelp = TRUE;
@@ -211,7 +218,7 @@ int CDECL wmain(int argc, WCHAR** argv)
         return 9001;
     }
 
-    PFN_RUN pfnRun = LoadWithDll();
+    PFN_RUNEX pfnRun = LoadWithDll();
     if (!pfnRun)
         return 9003;
 
@@ -250,21 +257,21 @@ int CDECL wmain(int argc, WCHAR** argv)
         return 9001;
     }
 
-    printf("[%S] Starting in-proc: %S\n[%S] Command Line:%S\n", g_csWithExe, exe, g_csWithExe, cmd);
+    printf("[%S] Starting: %S\n[%S] Command Line:%S\n[%S] flags=0x%X\n",
+        g_csWithExe, exe, g_csWithExe, cmd, g_csWithExe, flags);
     fflush(stdout);
-
-    if (fDllDir)
-        SetGuestDllDir(exe);
 
     UINT code = 0;
     // Host decides how to process SEH. For a GUI app a secondary message
     // pump is possible; this sample just prints / beeps.
     __try
     {
-        // Maps the EXE, Runs it by calling its EP,
-        // returns result by Intercepting original ExitProcess (0 if map/setup failed).
-        code = pfnRun(exe, cmd);
-        printf("[%S] Returned from run with code: %d\n", g_csWithExe, (int)code);
+        // Maps the EXE, runs it by calling its EP.
+        // WITH_EXIT: guest ExitProcess returns here (0 if map/setup failed).
+        code = pfnRun(exe, cmd, flags, NULL);
+        if (GetLastError() == ERROR_INSUFFICIENT_BUFFER)
+            printf("[%S] Command line longer than host line — crash possible.\n", g_csWithExe);
+        printf("[%S] RunEx returned %u\n", g_csWithExe, code);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
